@@ -255,20 +255,62 @@ Do not make a thin mode the default during initial development.
 5. After the safe default BTS-authoritative repaint, should hosts additionally
    expose root reload/remount, a fatal diagnostic or an application callback?
 
-## Proposed next experiment
+## Prototype results
 
-Run the two architecture gates before another executor:
+Two deliberately small experiments were run against the same GHC JavaScript
+toolchain and the conformance fixture used by the first-frame work.
 
-1. Link one `StaticPtr` closure into a full fixture program and a minimal
-   SPT-only program, then compare the emitted `StaticKey` fingerprints. A
-   mismatch makes a generated key-mapping table mandatory for C.
-2. Run the conformance fixture's BTS program under Node, persist the existing
-   `InitialFrameManifest`, replay it through a generic executor and have a
-   second BTS run validate it with `compareInitialFrames`. This establishes B+
-   independently of `onMain` slicing.
+### `StaticPtr` link-graph stability
 
-In parallel, generate an event/capability/handler manifest and fail a BTS-only
-build containing `onMain`. Once that contract is stable, compare:
+The identical `Shared.hs` closure was compiled into two independent GHC JS
+programs. The minimal program linked only that closure; the full program added
+`Data.Map`, 200 map entries and an unrelated static closure. Their generated
+`all.js` files were 2,168,273 and 2,297,881 bytes respectively, so the final
+link graphs were observably different. Both programs printed the same shared
+key:
+
+```text
+9f8082e547c1407882e17e3eaf2f05e5
+```
+
+The full program's unrelated closure had a distinct key
+`3e1241819ab6d1a7f6669a9e78ccf059`. This removes simple link-set membership as
+an immediate blocker for C. It does **not** prove stability across source moves,
+package/unit-id changes, compiler upgrades or transformations that clone the
+closure. A generated slice should still emit and validate a BTS↔MTS key table
+at build time rather than treating this one result as an ABI guarantee.
+
+### B+ offline first-frame replay
+
+The exact conformance BTS executable was run twice under Bun with a mock Lynx
+peer, using the production recorder rather than a hand-written fixture. Each
+run produced a slot-normalized manifest with 29 nodes and 109 operations:
+
+| Property | Result |
+|---|---:|
+| compact manifest JSON | 11,917 B |
+| SHA-256, run 1 | `76a734aba48f34b1ed7072d5930e744b6a39e4ec2bef6d6900296146e7e926b5` |
+| SHA-256, run 2 | `76a734aba48f34b1ed7072d5930e744b6a39e4ec2bef6d6900296146e7e926b5` |
+| generic executor replay | 29 nodes, one root child, 18 event bindings |
+| serialized replay tree | 7,774 B; identical for both runs |
+
+The executor reconstructed the expected IDs, text, styles, hierarchy and event
+identity records. This is concrete evidence that B+ can restore this fixture's
+synchronous first-frame *shape* as data without linking the Haskell runtime on
+MTS. It also demonstrates the boundary: the 18 event records name handlers but
+do not contain their app-specific implementation or typed state access, so the
+experiment does not solve `onMain`.
+
+This closes only the static-fixture determinism and generic-replay gate. A real
+B+ implementation must still reject or parameterize first frames that depend
+on global props, locale, clock/randomness or native capability reads, embed the
+manifest into a real Lynx MTS bundle, and validate it against the runtime BTS
+digest on device.
+
+## Remaining experiment and rollout
+
+Next, generate an event/capability/handler manifest and fail a BTS-only build
+containing `onMain`. Once that contract is stable, compare:
 
 - B, using the already measured common executor; and
 - B+, using the offline first-frame manifest; and

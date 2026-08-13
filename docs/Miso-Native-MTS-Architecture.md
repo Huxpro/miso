@@ -15,6 +15,10 @@ bytecode. An experimental fixed TypeScript executor reduces the same fixture to
 5,522,973 bytes (-42.4%) and its MTS bytecode to 9,709 bytes (-99.8%). That
 experiment is intentionally not proposed as equivalent: it changes first paint
 to asynchronous BTS patches and cannot execute app-specific `onMain` handlers.
+The 4,080,853-byte MTS chunk is already PrimJS bytecode: source parsing and
+minification headroom are already spent at build time, leaving load,
+initialization, memory and bytecode evaluation costs. Only changing what is
+linked into the MTS can materially move those costs.
 
 The decision is therefore architectural, not a bundler flag. This RFC asks
 maintainers to choose an explicit semantic mode before product code is added.
@@ -118,6 +122,26 @@ This is the lowest-complexity path to the measured size reduction, but it must
 be opt-in and named as a semantic mode. It must not silently change existing
 applications.
 
+### B+. Add a build-time first-frame manifest to the thin mode
+
+Synchronous first paint and app-specific `onMain` are separate problems. First
+paint can be represented as data: run the BTS program once at build time,
+record its slot-normalized first-frame manifest and embed that data for replay
+by the common MTS executor. The runtime BTS then validates its own initial frame
+against the embedded manifest using the same `compareInitialFrames` contract.
+
+This restores synchronous first paint while keeping MTS bytecode near B's KB
+range. `onMain` remains unavailable or explicitly async-degraded, so B+ is a
+complete terminal mode for applications that do not use synchronous main-thread
+handlers. It is also a lower-risk staging point for C: the existing runtime
+recorder already emits the required manifest format; an offline Node run closes
+the build-time recording → generic executor replay → runtime BTS validation
+loop.
+
+The prototype must prove deterministic build inputs (global props, locale,
+clock/randomness and native capability reads) or reject pages whose first frame
+cannot be recorded reproducibly.
+
 ### C. Generate a common executor plus an app-specific MTS slice
 
 The common executor owns PAPI, patch application and protocol machinery. A
@@ -135,6 +159,12 @@ a compiler/linker boundary and a versioned wire protocol. It is the highest
 engineering cost and must prove that the generated slice remains debuggable and
 smaller for real applications, not only the core fixture.
 
+Its first feasibility gate is `StaticPtr` identity. `StaticKey` fingerprints
+must remain identical when the same closure is linked into two independent GHC
+JS programs (the full BTS app and the generated MTS slice). If they differ by
+link unit, the build must generate and validate an explicit cross-program key
+mapping table. Test this before investing in reachability-driven slicing.
+
 ## Required wire contract for B or C
 
 Any thin mode needs a versioned contract independent of timing accidents.
@@ -142,7 +172,7 @@ Any thin mode needs a versioned contract independent of timing accidents.
 ### Build metadata
 
 - protocol and executor version;
-- supported semantic mode (`bts-only` or `generated-slice`);
+- supported semantic mode (`bts-only`, `bts-manifest` or `generated-slice`);
 - complete delegated event-name/phase/direct-binding manifest;
 - component and handler identity table;
 - capability bits for synchronous first paint and `onMain`;
@@ -184,7 +214,7 @@ because it uses the same protocol.
 |---|---|---|---|
 | current first-paint semantics | yes | no | target: yes |
 | current `onMain` semantics | yes | no / async fallback | target: yes |
-| measured size reduction | none yet | -42.4% core | unknown, expected between A/B |
+| measured size reduction | none yet | -42.4% core (shipped size only; startup/memory not yet measured) | unknown, expected between A/B |
 | compiler changes | low | low/moderate | high |
 | runtime protocol complexity | current | moderate | high |
 | migration risk | low | explicit opt-in | moderate/high |
@@ -222,16 +252,26 @@ Do not make a thin mode the default during initial development.
    budget preventing further MTS growth?
 4. For option C, should the slice boundary be generated from `StaticPtr`
    reachability, an explicit user annotation/manifest, or both?
-5. What mismatch recovery should hosts expose: freeze with fatal diagnostic,
-   root reload/remount, or an application callback?
+5. After the safe default BTS-authoritative repaint, should hosts additionally
+   expose root reload/remount, a fatal diagnostic or an application callback?
 
 ## Proposed next experiment
 
-Prototype metadata and protocol validation before another executor. The next
-code change should generate an event/capability/handler manifest and fail a
-BTS-only build containing `onMain`. Once that contract is stable, compare:
+Run the two architecture gates before another executor:
+
+1. Link one `StaticPtr` closure into a full fixture program and a minimal
+   SPT-only program, then compare the emitted `StaticKey` fingerprints. A
+   mismatch makes a generated key-mapping table mandatory for C.
+2. Run the conformance fixture's BTS program under Node, persist the existing
+   `InitialFrameManifest`, replay it through a generic executor and have a
+   second BTS run validate it with `compareInitialFrames`. This establishes B+
+   independently of `onMain` slicing.
+
+In parallel, generate an event/capability/handler manifest and fail a BTS-only
+build containing `onMain`. Once that contract is stable, compare:
 
 - B, using the already measured common executor; and
+- B+, using the offline first-frame manifest; and
 - a minimal C slice containing the core fixture's first frame and two
   app-specific main-thread handlers.
 

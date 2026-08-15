@@ -1,7 +1,7 @@
 # Miso Native main-thread runtime architecture
 
-Status: local RFC / measured decision record. This document does not select or
-implement a new default.
+Status: maintainer decision recorded. Option A remains the primary architecture;
+the measured B/B+/C work remains experimental and does not change the default.
 
 ## Summary
 
@@ -20,8 +20,31 @@ minification headroom are already spent at build time, leaving load,
 initialization, memory and bytecode evaluation costs. Only changing what is
 linked into the MTS can materially move those costs.
 
-The decision is therefore architectural, not a bundler flag. This RFC asks
-maintainers to choose an explicit semantic mode before product code is added.
+The decision is therefore architectural, not a bundler flag. The maintainer
+selected Option A after reviewing the measurements and semantic trade-offs.
+
+## Maintainer decision (2026-08-15)
+
+Option A remains the primary strategy for Miso Native and the intended basis
+for the 1.13 release:
+
+- synchronous MTS first paint remains the current invariant for every app;
+- `onMain` keeps synchronous, typed model access and raw `ElementRef`
+  delegation on MTS, while ordinary `on*` handlers remain the BTS fallback;
+- the full MTS program remains necessary for Haskell main-thread handlers,
+  initial rendering, and cross-thread `action` routing under the current
+  architecture;
+- MTS size work should first investigate compiler/linker DCE, minification and
+  an explicit size budget instead of weakening those semantics;
+- B, B+ and C remain useful experiments, not candidate defaults.
+
+The maintainer also expects identical MTS/BTS `VTree`, node IDs and `StaticKey`
+values during normal `initialDraw`. The IFR work is therefore framed as an
+executable invariant check plus bounded fail-safe recovery, not evidence that a
+well-formed application normally diverges. The forced mismatch was deliberate
+fault injection demonstrating that a violated invariant otherwise corrupts
+later patches/events silently. Whether hosts should expose an additional
+reload, fatal diagnostic, callback or telemetry policy remains open.
 
 ## Why Rspack tuning is not the pivot
 
@@ -242,18 +265,18 @@ Do not make a thin mode the default during initial development.
    only after compatibility and performance budgets hold across representative
    applications.
 
-## Questions for maintainers
+## Decision outcomes and remaining question
 
-1. Is preserving synchronous first paint a non-negotiable property for every
-   Miso Native app, or may an explicit BTS-only mode choose async first paint?
-2. Must `onMain` preserve synchronous typed access to component state, or is an
-   async BTS fallback an acceptable separate API?
-3. Should option A remain the default while B/C are experimental, with a build
-   budget preventing further MTS growth?
-4. For option C, should the slice boundary be generated from `StaticPtr`
-   reachability, an explicit user annotation/manifest, or both?
-5. After the safe default BTS-authoritative repaint, should hosts additionally
-   expose root reload/remount, a fatal diagnostic or an application callback?
+1. **Answered:** preserve synchronous first paint for current Miso Native apps.
+2. **Answered:** preserve synchronous typed state access for `onMain`; use the
+   ordinary BTS `on*` variants where main-thread handling is unnecessary.
+3. **Answered:** Option A remains primary; pursue DCE/minification and size
+   accounting before considering a semantic mode change.
+4. **Answered for any future C experiment:** derive reachability from
+   `StaticPtr` and validate the resulting cross-program identity mapping.
+5. **Open:** after a detected IFR invariant violation and safe BTS-authoritative
+   repaint, should hosts also expose reload/remount, a fatal diagnostic, an
+   application callback or telemetry-only policy?
 
 ## Prototype results
 
